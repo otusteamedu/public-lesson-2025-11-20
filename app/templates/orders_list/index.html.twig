@@ -39,6 +39,36 @@
                     </div>
                 {% endif %}
             </div>
+
+            <div class="col">
+                <h2>События</h2>
+                {% if events is empty %}
+                <h3>Нет зафиксированных событий</h3>
+                {% else %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                        <tr>
+                            <th scope="col">Событие</th>
+                            <th scope="col">Сработало</th>
+                            <th scope="col">Сообщение</th>
+                            <th scope="col">Источник</th>
+                        </tr>
+                        </thead>
+                        <tbody class="table-group-divider">
+                        {% for eventItem in events %}
+                            <tr>
+                                <td>{{ eventItem.event }}</td>
+                                <td>{{ eventItem.addedAt }}</td>
+                                <td>{{ eventItem.message }}</td>
+                                <td>{{ eventItem.source }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
+                </div>
+            </div>
         </div>
     </div>
 

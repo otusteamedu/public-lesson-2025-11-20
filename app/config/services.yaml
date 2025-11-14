@@ -16,5 +16,29 @@ services:
     App\:
         resource: '../src/'
 
+    redis_client:
+        class: Redis
+        factory: Symfony\Component\Cache\Adapter\RedisAdapter::createConnection
+        arguments:
+            - '%env(REDIS_DSN)%'
+
+    redis_adapter:
+        class: Symfony\Component\Cache\Adapter\RedisAdapter
+        arguments:
+            - '@redis_client'
+            - 'pl_app'
+
+    App\Provider\EventProvider:
+        arguments:
+            $redisAdapter: '@redis_adapter'
+
+    App\Service\EventService:
+        arguments:
+            $redisAdapter: '@redis_adapter'
+
+    App\EventListener\KernelExceptionEventListener:
+        tags:
+            - { name: kernel.event_listener, event: kernel.exception }
+
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
