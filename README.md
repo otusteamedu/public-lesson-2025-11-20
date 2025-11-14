@@ -293,7 +293,7 @@
    KEYS *
    ```
 
-### Добавляем слушателя для kernel.exception
+### Событие kernel.exception
 
 1. Создаём шаблон для Twig `/templates/error.twig.html`
    ```html
