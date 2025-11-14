@@ -1,0 +1,45 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Список заказов{% endblock %}
+
+{% block body %}
+
+    <div class="container">
+
+        <div class="row">
+            <div class="col">
+                <h2>Список заказов</h2>
+                {% if orders is empty %}
+                    <h3>Заказов нет</h3>
+                {% else %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                            <tr>
+                                <th scope="col">orderId</th>
+                                <th scope="col">Создан</th>
+                                <th scope="col">Изменён</th>
+                                <th scope="col">Клиент</th>
+                                <th scope="col">Статус</th>
+                                <th scope="col">Состав заказа</th>
+                            </tr>
+                            <tbody class="table-group-divider">
+                            {% for orderItem in orders %}
+                                <tr>
+                                    <td>{{ orderItem.id }}</td>
+                                    <td>{{ orderItem.createdAt }}</td>
+                                    <td>{{ orderItem.updatedAt }}</td>
+                                    <td>{{ orderItem.createdBy }}</td>
+                                    <td>{{ orderItem.status }}</td>
+                                    <td>{{ orderItem.orderContent|join(';') }}</td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
