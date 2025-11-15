@@ -405,3 +405,167 @@
 6. Пробуем зайти на несуществующую страницу в браузере, видим отрендеренный в Twig шаблон с текстом ошибки
 7. В контейнере Redis по запросу `KEYS *` видим наш ключ `pl_app:builtinEvents`
 8. По запросу `GET pl_app:builtinEvents` видим содержимое ключа со списком добавленных событий
+
+### Событие kernel.view
+
+1. Создаём класс `App\Response\ApiResponse`
+   ```php
+   <?php
+   
+   namespace App\Response;
+   
+   readonly class ApiResponse
+   {
+       public function __construct(
+           public bool $result,
+           public mixed $data,
+           public ?string $message,
+           public int $code
+       ) {
+       }
+   
+       public static function createSuccess(mixed $data, ?string $message, int $code): ApiResponse
+       {
+           return new self(true, $data, $message, $code);
+       }
+   
+       public static function createError(mixed $data, ?string $message, int $code): ApiResponse{
+           return new self(false, $data, $message, $code);
+       }
+   }
+   ```
+2. Создаём класс-слушатель события `App\EventListener\KernelViewEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Response\ApiResponse;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpFoundation\JsonResponse;
+   use Symfony\Component\HttpKernel\Event\ViewEvent;
+   use Symfony\Component\Serializer\Encoder\JsonEncoder;
+   use Symfony\Component\Serializer\Exception\ExceptionInterface;
+   use Symfony\Component\Serializer\SerializerInterface;
+   
+   final readonly class KernelViewEventListener
+   {
+       public function __construct(
+           private EventService $eventService,
+           private SerializerInterface $serializer
+       ) {
+       }
+   
+       /**
+        * @param ViewEvent $event
+        * @return void
+        * 
+        * @throws InvalidArgumentException
+        * @throws ExceptionInterface
+        */
+       public function onKernelView(ViewEvent $event): void
+       {
+           $controllerResult = $event->getControllerResult();
+   
+           if ($controllerResult instanceof ApiResponse) {
+               $jsonResponse = new JsonResponse(
+                   data: $this->serializer->serialize($controllerResult, JsonEncoder::FORMAT),
+                   status: $controllerResult->code,
+                   json: true
+               );
+   
+               $event->setResponse($jsonResponse);
+           }
+   
+           $this->eventService->addBuiltInEvent('kernel.view', '', KernelViewEventListener::class);
+       }
+   }
+   ```
+3. Исправляем методы `__construct` и `onKernelException` класса `App\EventListener\KernelExceptionEventListener`:
+   ```php
+   public function __construct(
+   private Environment $twig,
+   private EventService $eventService,
+   private SerializerInterface $serializer
+   ) {
+   }
+
+    /**
+     * @param ExceptionEvent $event
+     * @return void
+     *
+     * @throws InvalidArgumentException
+     * @throws LoaderError
+     * @throws RuntimeError
+     * @throws SyntaxError
+     * @throws ExceptionInterface
+     */
+    public function onKernelException(ExceptionEvent $event): void
+    {
+        $exception = $event->getThrowable();
+
+        $code = $this->resolveCode($exception);
+
+        if ($this->isApiRequest($event->getRequest())) {
+            $apiResponse = ApiResponse::createError(null, $exception->getMessage(), $code);
+
+            $response = new JsonResponse(
+                data: $this->serializer->serialize($apiResponse, JsonEncoder::FORMAT),
+                status: $code,
+                json: true
+            );
+        } else {
+            $response = new Response(
+                $this->twig->render('error.html.twig', ['message' => $exception->getMessage()]),
+                $code
+            );
+        }
+
+        $event->setResponse($response);
+
+        $this->eventService->addBuiltInEvent(
+            'kernel.exception',
+            $exception->getMessage(),
+            KernelExceptionEventListener::class
+        );
+    }
+   ```
+4. Исправляем контроллер `App\Controller\CreateOrderApiController`:
+   ```php
+   <?php
+   
+   namespace App\Controller;
+   
+   use App\Dto\CreateOrderRequestDto;
+   use App\Response\ApiResponse;
+   use App\Service\OrderService;
+   use Symfony\Component\HttpFoundation\Response;
+   use Symfony\Component\HttpKernel\Attribute\AsController;
+   use Symfony\Component\HttpKernel\Attribute\MapRequestPayload;
+   use Symfony\Component\Routing\Attribute\Route;
+   
+   #[AsController]
+   final class CreateOrderApiController
+   {
+       #[Route(path: '/api/orders/create', methods: ['POST'])]
+       public function __invoke(
+           #[MapRequestPayload] CreateOrderRequestDto $createOrderRequestDto,
+           OrderService $orderService
+       ): ApiResponse {
+           return ApiResponse::createSuccess(
+               data: [
+                   'orderId' => $orderService->createOrder($createOrderRequestDto)
+               ],
+               message: null,
+               code: Response::HTTP_CREATED
+           );
+       }
+   }
+   ```
+5. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener 
+   ```yaml
+    App\EventListener\KernelViewEventListener:
+        tags:
+            - { name: kernel.event_listener, event: kernel.view }
+   ```

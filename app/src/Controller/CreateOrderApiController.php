@@ -3,28 +3,27 @@
 namespace App\Controller;
 
 use App\Dto\CreateOrderRequestDto;
+use App\Response\ApiResponse;
 use App\Service\OrderService;
-use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
-use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Attribute\AsController;
 use Symfony\Component\HttpKernel\Attribute\MapRequestPayload;
 use Symfony\Component\Routing\Attribute\Route;
 
-final class CreateOrderApiController extends AbstractController
+#[AsController]
+final class CreateOrderApiController
 {
     #[Route(path: '/api/orders/create', methods: ['POST'])]
     public function __invoke(
         #[MapRequestPayload] CreateOrderRequestDto $createOrderRequestDto,
         OrderService $orderService
-    ): JsonResponse {
-        return $this->json(
-            [
-                'result' => true,
-                'data' => [
-                    'orderId' => $orderService->createOrder($createOrderRequestDto)
-                ]
+    ): ApiResponse {
+        return ApiResponse::createSuccess(
+            data: [
+                'orderId' => $orderService->createOrder($createOrderRequestDto)
             ],
-            Response::HTTP_CREATED
+            message: null,
+            code: Response::HTTP_CREATED
         );
     }
 }
