@@ -569,3 +569,162 @@
         tags:
             - { name: kernel.event_listener, event: kernel.view }
    ```
+   
+### Событие kernel.request
+
+1. Создаём перечисление `App\Request\RequestAttributesEnum`
+   ```php
+   <?php
+   
+   namespace App\Request;
+   
+   enum RequestAttributesEnum: string
+   {
+       case IS_API_REQUEST = 'is_api_request';
+   }
+   ```
+2. Создаём трейт `App\Request\ApiRequestCheckTrait`
+   ```php
+   <?php
+   
+   namespace App\Request;
+   
+   use Symfony\Component\HttpFoundation\Request;
+   
+   trait ApiRequestCheckTrait
+   {
+       private function isApiRequest(Request $request):bool
+       {
+           return $request->attributes->get(RequestAttributesEnum::IS_API_REQUEST->value, false);
+       }
+   }
+   ```
+3. Создаём класс-слушатель события `App\EventListener\KernelRequestEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Request\RequestAttributesEnum;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpFoundation\Request;
+   use Symfony\Component\HttpKernel\Event\RequestEvent;
+   
+   final readonly class KernelRequestEventListener
+   {
+       public function __construct(private EventService $eventService)
+       {
+       }
+   
+       /**
+        * @param RequestEvent $event
+        * @return void
+        *
+        * @throws InvalidArgumentException
+        */
+       public function onKernelRequest(RequestEvent $event): void
+       {
+           $event->getRequest()->attributes->set(
+               key: RequestAttributesEnum::IS_API_REQUEST->value,
+               value: $this->isApiRequest($event->getRequest())
+           );
+   
+           $this->eventService->addBuiltInEvent('kernel.request', '', KernelRequestEventListener::class);
+       }
+   
+       private function isApiRequest(Request $request): bool
+       {
+           return str_contains($request->getRequestUri(), '/api');
+       }
+   }
+   ```
+4. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener
+   ```yaml
+    App\EventListener\KernelRequestEventListener:
+        tags:
+            - { name: kernel.event_listener, event: kernel.request }
+   ```
+5. Исправляем слушатель `App\EventListener\KernelExceptionEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Request\ApiRequestCheckTrait;
+   use App\Response\ApiResponse;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpFoundation\JsonResponse;
+   use Symfony\Component\HttpFoundation\Response;
+   use Symfony\Component\HttpKernel\Event\ExceptionEvent;
+   use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+   use Symfony\Component\Serializer\Encoder\JsonEncoder;
+   use Symfony\Component\Serializer\Exception\ExceptionInterface;
+   use Symfony\Component\Serializer\SerializerInterface;
+   use Twig\Environment;
+   use Twig\Error\LoaderError;
+   use Twig\Error\RuntimeError;
+   use Twig\Error\SyntaxError;
+   
+   final readonly class KernelExceptionEventListener
+   {
+       use ApiRequestCheckTrait;
+   
+       public function __construct(
+           private Environment $twig,
+           private EventService $eventService,
+           private SerializerInterface $serializer
+       ) {
+       }
+   
+       /**
+        * @param ExceptionEvent $event
+        * @return void
+        *
+        * @throws InvalidArgumentException
+        * @throws LoaderError
+        * @throws RuntimeError
+        * @throws SyntaxError
+        * @throws ExceptionInterface
+        */
+       public function onKernelException(ExceptionEvent $event): void
+       {
+           $exception = $event->getThrowable();
+   
+           $code = $this->resolveCode($exception);
+   
+           if ($this->isApiRequest($event->getRequest())) {
+               $apiResponse = ApiResponse::createError(null, $exception->getMessage(), $code);
+   
+               $response = new JsonResponse(
+                   data: $this->serializer->serialize($apiResponse, JsonEncoder::FORMAT),
+                   status: $code,
+                   json: true
+               );
+           } else {
+               $response = new Response(
+                   $this->twig->render('error.html.twig', ['message' => $exception->getMessage()]),
+                   $code
+               );
+           }
+   
+           $event->setResponse($response);
+   
+           $this->eventService->addBuiltInEvent(
+               'kernel.exception',
+               $exception->getMessage(),
+               KernelExceptionEventListener::class
+           );
+       }
+   
+       private function resolveCode(\Throwable $exception): int
+       {
+           if ($exception instanceof HttpExceptionInterface) {
+               return $exception->getStatusCode();
+           }
+   
+           return Response::HTTP_INTERNAL_SERVER_ERROR;
+       }
+   }
+   ```

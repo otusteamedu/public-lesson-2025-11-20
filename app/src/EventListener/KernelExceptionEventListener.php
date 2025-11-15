@@ -2,11 +2,11 @@
 
 namespace App\EventListener;
 
+use App\Request\ApiRequestCheckTrait;
 use App\Response\ApiResponse;
 use App\Service\EventService;
 use Psr\Cache\InvalidArgumentException;
 use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\ExceptionEvent;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
@@ -20,6 +20,8 @@ use Twig\Error\SyntaxError;
 
 final readonly class KernelExceptionEventListener
 {
+    use ApiRequestCheckTrait;
+
     public function __construct(
         private Environment $twig,
         private EventService $eventService,
@@ -74,10 +76,5 @@ final readonly class KernelExceptionEventListener
         }
 
         return Response::HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    private function isApiRequest(Request $request): bool
-    {
-        return str_contains($request->getRequestUri(), '/api');
     }
 }
