@@ -405,3 +405,579 @@
 6. Пробуем зайти на несуществующую страницу в браузере, видим отрендеренный в Twig шаблон с текстом ошибки
 7. В контейнере Redis по запросу `KEYS *` видим наш ключ `pl_app:builtinEvents`
 8. По запросу `GET pl_app:builtinEvents` видим содержимое ключа со списком добавленных событий
+
+### Событие kernel.view
+
+1. Создаём класс `App\Response\ApiResponse`
+   ```php
+   <?php
+   
+   namespace App\Response;
+   
+   readonly class ApiResponse
+   {
+       public function __construct(
+           public bool $result,
+           public mixed $data,
+           public ?string $message,
+           public int $code
+       ) {
+       }
+   
+       public static function createSuccess(mixed $data, ?string $message, int $code): ApiResponse
+       {
+           return new self(true, $data, $message, $code);
+       }
+   
+       public static function createError(mixed $data, ?string $message, int $code): ApiResponse{
+           return new self(false, $data, $message, $code);
+       }
+   }
+   ```
+2. Создаём класс-слушатель события `App\EventListener\KernelViewEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Response\ApiResponse;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpFoundation\JsonResponse;
+   use Symfony\Component\HttpKernel\Event\ViewEvent;
+   use Symfony\Component\Serializer\Encoder\JsonEncoder;
+   use Symfony\Component\Serializer\Exception\ExceptionInterface;
+   use Symfony\Component\Serializer\SerializerInterface;
+   
+   final readonly class KernelViewEventListener
+   {
+       public function __construct(
+           private EventService $eventService,
+           private SerializerInterface $serializer
+       ) {
+       }
+   
+       /**
+        * @param ViewEvent $event
+        * @return void
+        * 
+        * @throws InvalidArgumentException
+        * @throws ExceptionInterface
+        */
+       public function onKernelView(ViewEvent $event): void
+       {
+           $controllerResult = $event->getControllerResult();
+   
+           if ($controllerResult instanceof ApiResponse) {
+               $jsonResponse = new JsonResponse(
+                   data: $this->serializer->serialize($controllerResult, JsonEncoder::FORMAT),
+                   status: $controllerResult->code,
+                   json: true
+               );
+   
+               $event->setResponse($jsonResponse);
+           }
+   
+           $this->eventService->addBuiltInEvent('kernel.view', '', KernelViewEventListener::class);
+       }
+   }
+   ```
+3. Исправляем методы `__construct` и `onKernelException` класса `App\EventListener\KernelExceptionEventListener`:
+   ```php
+   public function __construct(
+   private Environment $twig,
+   private EventService $eventService,
+   private SerializerInterface $serializer
+   ) {
+   }
+
+    /**
+     * @param ExceptionEvent $event
+     * @return void
+     *
+     * @throws InvalidArgumentException
+     * @throws LoaderError
+     * @throws RuntimeError
+     * @throws SyntaxError
+     * @throws ExceptionInterface
+     */
+    public function onKernelException(ExceptionEvent $event): void
+    {
+        $exception = $event->getThrowable();
+
+        $code = $this->resolveCode($exception);
+
+        if ($this->isApiRequest($event->getRequest())) {
+            $apiResponse = ApiResponse::createError(null, $exception->getMessage(), $code);
+
+            $response = new JsonResponse(
+                data: $this->serializer->serialize($apiResponse, JsonEncoder::FORMAT),
+                status: $code,
+                json: true
+            );
+        } else {
+            $response = new Response(
+                $this->twig->render('error.html.twig', ['message' => $exception->getMessage()]),
+                $code
+            );
+        }
+
+        $event->setResponse($response);
+
+        $this->eventService->addBuiltInEvent(
+            'kernel.exception',
+            $exception->getMessage(),
+            KernelExceptionEventListener::class
+        );
+    }
+   ```
+4. Исправляем контроллер `App\Controller\CreateOrderApiController`:
+   ```php
+   <?php
+   
+   namespace App\Controller;
+   
+   use App\Dto\CreateOrderRequestDto;
+   use App\Response\ApiResponse;
+   use App\Service\OrderService;
+   use Symfony\Component\HttpFoundation\Response;
+   use Symfony\Component\HttpKernel\Attribute\AsController;
+   use Symfony\Component\HttpKernel\Attribute\MapRequestPayload;
+   use Symfony\Component\Routing\Attribute\Route;
+   
+   #[AsController]
+   final class CreateOrderApiController
+   {
+       #[Route(path: '/api/orders/create', methods: ['POST'])]
+       public function __invoke(
+           #[MapRequestPayload] CreateOrderRequestDto $createOrderRequestDto,
+           OrderService $orderService
+       ): ApiResponse {
+           return ApiResponse::createSuccess(
+               data: [
+                   'orderId' => $orderService->createOrder($createOrderRequestDto)
+               ],
+               message: null,
+               code: Response::HTTP_CREATED
+           );
+       }
+   }
+   ```
+5. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener
+   ```yaml
+    App\EventListener\KernelViewEventListener:
+        tags:
+            - { name: kernel.event_listener, event: kernel.view }
+   ```
+
+### Событие kernel.request
+
+1. Создаём перечисление `App\Request\RequestAttributesEnum`
+   ```php
+   <?php
+   
+   namespace App\Request;
+   
+   enum RequestAttributesEnum: string
+   {
+       case IS_API_REQUEST = 'is_api_request';
+   }
+   ```
+2. Создаём трейт `App\Request\ApiRequestCheckTrait`
+   ```php
+   <?php
+   
+   namespace App\Request;
+   
+   use Symfony\Component\HttpFoundation\Request;
+   
+   trait ApiRequestCheckTrait
+   {
+       private function isApiRequest(Request $request):bool
+       {
+           return $request->attributes->get(RequestAttributesEnum::IS_API_REQUEST->value, false);
+       }
+   }
+   ```
+3. Создаём класс-слушатель события `App\EventListener\KernelRequestEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Request\RequestAttributesEnum;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpFoundation\Request;
+   use Symfony\Component\HttpKernel\Event\RequestEvent;
+   
+   final readonly class KernelRequestEventListener
+   {
+       public function __construct(private EventService $eventService)
+       {
+       }
+   
+       /**
+        * @param RequestEvent $event
+        * @return void
+        *
+        * @throws InvalidArgumentException
+        */
+       public function onKernelRequest(RequestEvent $event): void
+       {
+           $event->getRequest()->attributes->set(
+               key: RequestAttributesEnum::IS_API_REQUEST->value,
+               value: $this->isApiRequest($event->getRequest())
+           );
+   
+           $this->eventService->addBuiltInEvent('kernel.request', '', KernelRequestEventListener::class);
+       }
+   
+       private function isApiRequest(Request $request): bool
+       {
+           return str_contains($request->getRequestUri(), '/api');
+       }
+   }
+   ```
+4. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener
+   ```yaml
+    App\EventListener\KernelRequestEventListener:
+        tags:
+            - { name: kernel.event_listener, event: kernel.request }
+   ```
+5. Исправляем слушатель `App\EventListener\KernelExceptionEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Request\ApiRequestCheckTrait;
+   use App\Response\ApiResponse;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpFoundation\JsonResponse;
+   use Symfony\Component\HttpFoundation\Response;
+   use Symfony\Component\HttpKernel\Event\ExceptionEvent;
+   use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+   use Symfony\Component\Serializer\Encoder\JsonEncoder;
+   use Symfony\Component\Serializer\Exception\ExceptionInterface;
+   use Symfony\Component\Serializer\SerializerInterface;
+   use Twig\Environment;
+   use Twig\Error\LoaderError;
+   use Twig\Error\RuntimeError;
+   use Twig\Error\SyntaxError;
+   
+   final readonly class KernelExceptionEventListener
+   {
+       use ApiRequestCheckTrait;
+   
+       public function __construct(
+           private Environment $twig,
+           private EventService $eventService,
+           private SerializerInterface $serializer
+       ) {
+       }
+   
+       /**
+        * @param ExceptionEvent $event
+        * @return void
+        *
+        * @throws InvalidArgumentException
+        * @throws LoaderError
+        * @throws RuntimeError
+        * @throws SyntaxError
+        * @throws ExceptionInterface
+        */
+       public function onKernelException(ExceptionEvent $event): void
+       {
+           $exception = $event->getThrowable();
+   
+           $code = $this->resolveCode($exception);
+   
+           if ($this->isApiRequest($event->getRequest())) {
+               $apiResponse = ApiResponse::createError(null, $exception->getMessage(), $code);
+   
+               $response = new JsonResponse(
+                   data: $this->serializer->serialize($apiResponse, JsonEncoder::FORMAT),
+                   status: $code,
+                   json: true
+               );
+           } else {
+               $response = new Response(
+                   $this->twig->render('error.html.twig', ['message' => $exception->getMessage()]),
+                   $code
+               );
+           }
+   
+           $event->setResponse($response);
+   
+           $this->eventService->addBuiltInEvent(
+               'kernel.exception',
+               $exception->getMessage(),
+               KernelExceptionEventListener::class
+           );
+       }
+   
+       private function resolveCode(\Throwable $exception): int
+       {
+           if ($exception instanceof HttpExceptionInterface) {
+               return $exception->getStatusCode();
+           }
+   
+           return Response::HTTP_INTERNAL_SERVER_ERROR;
+       }
+   }
+   ```
+
+### Событие kernel.controller
+
+1. Создаём класс-слушатель события `App\EventListener\KernelControllerEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpKernel\Event\ControllerEvent;
+   
+   class KernelControllerEventListener
+   {
+       public function __construct(private EventService $eventService)
+       {
+       }
+   
+       /**
+        * @param ControllerEvent $event
+        * @return void
+        *
+        * @throws InvalidArgumentException
+        */
+       public function onKernelController(ControllerEvent $event): void
+       {
+           $controllerData = $event->getController();
+   
+           if (!is_array($controllerData)) {
+               $message = (new \ReflectionClass($controllerData))->getShortName();
+           }
+           else {
+               $message = implode(':', array_keys($controllerData));
+           }
+   
+           $this->eventService->addBuiltInEvent(
+               eventName: 'kernel.controller',
+               message: $message,
+               source: KernelControllerEventListener::class
+           );
+       }
+   }
+   ```
+2. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener
+   ```yaml
+    App\EventListener\KernelControllerEventListener:
+        tags:
+            - { name: kernel.event_listener, event: kernel.controller }
+   ```
+
+### Событие kernel.controller_arguments
+
+1. Создаём класс-слушатель события `App\EventListener\KernelControllerArgumentsEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpKernel\Event\ControllerArgumentsEvent;
+   use Symfony\Component\Serializer\Encoder\JsonEncoder;
+   use Symfony\Component\Serializer\Exception\ExceptionInterface;
+   use Symfony\Component\Serializer\SerializerInterface;
+   
+   final readonly class KernelControllerArgumentsEventListener
+   {
+       public function __construct(
+           private EventService $eventService,
+           private SerializerInterface $serializer
+       ) {
+       }
+   
+       /**
+        * @param ControllerArgumentsEvent $event
+        * @return void
+        *
+        * @throws InvalidArgumentException
+        * @throws ExceptionInterface
+        */
+       public function onKernelControllerArguments(ControllerArgumentsEvent $event): void
+       {
+           $namedArguments = $event->getRequest()->attributes->all();
+           $controllerArguments = $event->getArguments();
+   
+           $this->eventService->addBuiltInEvent(
+               eventName: 'kernel.controller_arguments',
+               message: $this->serializer->serialize($namedArguments, JsonEncoder::FORMAT),
+               source: KernelControllerArgumentsEventListener::class
+           );
+       }
+   }
+   ```
+2. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener
+   ```yaml
+    App\EventListener\KernelControllerArgumentsEventListener:
+        tags:
+            - { name: kernel.event_listener, event: kernel.controller_arguments }
+   ```
+
+### Реализация argument_value_resolver
+
+1. Создаём DTO
+   ```php
+   <?php
+   
+   namespace App\Dto;
+   
+   use Symfony\Component\Validator\Constraints as Assert;
+   
+   readonly class UpdateStatusOrderRequestDto
+   {
+       public function __construct(
+           #[Assert\Positive(message: 'Идентификатор заказа должен быть больше нуля')]
+           public int $orderId,
+   
+           #[Assert\NotBlank]
+           public string $status
+       ) {
+       }
+   }
+   ```
+2. Добавляем метод `updateOrder` в репозиторий `App\Repository\OrderEntityRepository`
+   ```php
+    public function updateOrder(OrderEntity $order):void
+    {
+        /*
+         * Здесь ещё какая-нибудь обработка
+         */
+
+        //  ...
+
+        $this->getEntityManager()->flush();
+    }
+   ```
+3. Добавляем метод `updateOrder` в репозиторий `App\Service\updateOrder`
+   ```php
+    public function updateOrder(UpdateStatusOrderRequestDto $dto): void
+    {
+        $order = $this->orderEntityRepository->find($dto->orderId);
+
+        if (empty($order)) {
+            throw new NotFoundHttpException('Заказ не найден');
+        }
+
+        $order->setStatus($dto->status);
+
+        $this->orderEntityRepository->updateOrder($order);
+    }
+   ```
+4. Добавляем Resolver `App\ArgumentValueResolver\UpdateStatusOrderRequestDtoResolver`
+   ```php
+   <?php
+   
+   namespace App\ArgumentValueResolver;
+   
+   use App\Dto\UpdateStatusOrderRequestDto;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpFoundation\Request;
+   use Symfony\Component\HttpKernel\Attribute\AsTargetedValueResolver;
+   use Symfony\Component\HttpKernel\Controller\ValueResolverInterface;
+   use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadata;
+   use Symfony\Component\Serializer\Encoder\JsonEncoder;
+   use Symfony\Component\Serializer\Exception\ExceptionInterface;
+   use Symfony\Component\Serializer\SerializerInterface;
+   use Symfony\Component\Validator\Exception\ValidatorException;
+   use Symfony\Component\Validator\Validator\ValidatorInterface;
+   
+   #[AsTargetedValueResolver('update_status_order_request')]
+   final readonly class UpdateStatusOrderRequestDtoResolver implements ValueResolverInterface
+   {
+       public function __construct(
+           private SerializerInterface $serializer,
+           private ValidatorInterface $validator,
+           private EventService $eventService
+       ) {
+       }
+   
+       /**
+        * @param Request $request
+        * @param ArgumentMetadata $argument
+        * @return iterable
+        *
+        * @throws ExceptionInterface
+        * @throws InvalidArgumentException
+        */
+       public function resolve(Request $request, ArgumentMetadata $argument): iterable
+       {
+           $this->eventService->addBuiltInEvent(
+               eventName: 'kernel.argument_value_resolver',
+               message: $argument->getType(),
+               source: UpdateStatusOrderRequestDtoResolver::class
+           );
+   
+           if ($argument->getType() !== UpdateStatusOrderRequestDto::class) {
+               return [];
+           }
+   
+           $dto = $this->serializer->deserialize(
+               data: $request->getContent(),
+               type: UpdateStatusOrderRequestDto::class,
+               format: JsonEncoder::FORMAT
+           );
+   
+           $validationErrors = $this->validator->validate($dto);
+           if (count($validationErrors) > 0) {
+               $violations = [];
+               foreach ($validationErrors as $violation) {
+                   $violations[] = sprintf('%s: %s', $violation->getPropertyPath(), $violation->getMessage());
+               }
+   
+               throw new ValidatorException(implode("; ", $violations));
+           }
+   
+           yield $dto;
+       }
+   }
+   ```
+5. Добавляем контроллер `App\Controller\UpdateOrderStatusApiController`
+   ```php
+   <?php
+   
+   namespace App\Controller;
+   
+   use App\Dto\UpdateStatusOrderRequestDto;
+   use App\Response\ApiResponse;
+   use App\Service\OrderService;
+   use Symfony\Component\HttpFoundation\Response;
+   use Symfony\Component\HttpKernel\Attribute\AsController;
+   use Symfony\Component\HttpKernel\Attribute\ValueResolver;
+   use Symfony\Component\Routing\Attribute\Route;
+   
+   #[AsController]
+   final class UpdateOrderStatusApiController
+   {
+       #[Route(path: '/api/orders/update', methods: ['PATCH'])]
+       public function __invoke(
+           #[ValueResolver('update_status_order_request')]
+           UpdateStatusOrderRequestDto $updateStatusOrderRequestDto,
+           OrderService $orderService
+       ): ApiResponse {
+           $orderService->updateOrder($updateStatusOrderRequestDto);
+   
+           return ApiResponse::createSuccess(
+               data: null,
+               message: null,
+               code: Response::HTTP_OK
+           );
+       }
+   }
+   ```
