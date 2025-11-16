@@ -22,4 +22,15 @@ class OrderEntityRepository extends ServiceEntityRepository
 
         $this->getEntityManager()->flush();
     }
+
+    public function updateOrder(OrderEntity $order):void
+    {
+        /*
+         * Здесь ещё какая-нибудь обработка
+         */
+
+        //  ...
+
+        $this->getEntityManager()->flush();
+    }
 }

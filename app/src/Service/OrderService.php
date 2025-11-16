@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Dto\CreateOrderRequestDto;
 use App\Dto\OrderItemDto;
+use App\Dto\UpdateStatusOrderRequestDto;
 use App\Entity\OrderEntity;
 use App\Repository\ClientEntityRepository;
 use App\Repository\OrderEntityRepository;
@@ -56,5 +57,18 @@ final readonly class OrderService
         $this->orderEntityRepository->createOrder($order);
 
         return $order->getId();
+    }
+
+    public function updateOrder(UpdateStatusOrderRequestDto $dto): void
+    {
+        $order = $this->orderEntityRepository->find($dto->orderId);
+
+        if (empty($order)) {
+            throw new NotFoundHttpException('Заказ не найден');
+        }
+
+        $order->setStatus($dto->status);
+
+        $this->orderEntityRepository->updateOrder($order);
     }
 }

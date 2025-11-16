@@ -563,13 +563,13 @@
        }
    }
    ```
-5. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener 
+5. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener
    ```yaml
     App\EventListener\KernelViewEventListener:
         tags:
             - { name: kernel.event_listener, event: kernel.view }
    ```
-   
+
 ### Событие kernel.request
 
 1. Создаём перечисление `App\Request\RequestAttributesEnum`
@@ -778,7 +778,7 @@
         tags:
             - { name: kernel.event_listener, event: kernel.controller }
    ```
-   
+
 ### Событие kernel.controller_arguments
 
 1. Создаём класс-слушатель события `App\EventListener\KernelControllerArgumentsEventListener`
@@ -827,4 +827,157 @@
     App\EventListener\KernelControllerArgumentsEventListener:
         tags:
             - { name: kernel.event_listener, event: kernel.controller_arguments }
+   ```
+
+### Реализация argument_value_resolver
+
+1. Создаём DTO
+   ```php
+   <?php
+   
+   namespace App\Dto;
+   
+   use Symfony\Component\Validator\Constraints as Assert;
+   
+   readonly class UpdateStatusOrderRequestDto
+   {
+       public function __construct(
+           #[Assert\Positive(message: 'Идентификатор заказа должен быть больше нуля')]
+           public int $orderId,
+   
+           #[Assert\NotBlank]
+           public string $status
+       ) {
+       }
+   }
+   ```
+2. Добавляем метод `updateOrder` в репозиторий `App\Repository\OrderEntityRepository`
+   ```php
+    public function updateOrder(OrderEntity $order):void
+    {
+        /*
+         * Здесь ещё какая-нибудь обработка
+         */
+
+        //  ...
+
+        $this->getEntityManager()->flush();
+    }
+   ```
+3. Добавляем метод `updateOrder` в репозиторий `App\Service\updateOrder`
+   ```php
+    public function updateOrder(UpdateStatusOrderRequestDto $dto): void
+    {
+        $order = $this->orderEntityRepository->find($dto->orderId);
+
+        if (empty($order)) {
+            throw new NotFoundHttpException('Заказ не найден');
+        }
+
+        $order->setStatus($dto->status);
+
+        $this->orderEntityRepository->updateOrder($order);
+    }
+   ```
+4. Добавляем Resolver `App\ArgumentValueResolver\UpdateStatusOrderRequestDtoResolver`
+   ```php
+   <?php
+   
+   namespace App\ArgumentValueResolver;
+   
+   use App\Dto\UpdateStatusOrderRequestDto;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\HttpFoundation\Request;
+   use Symfony\Component\HttpKernel\Attribute\AsTargetedValueResolver;
+   use Symfony\Component\HttpKernel\Controller\ValueResolverInterface;
+   use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadata;
+   use Symfony\Component\Serializer\Encoder\JsonEncoder;
+   use Symfony\Component\Serializer\Exception\ExceptionInterface;
+   use Symfony\Component\Serializer\SerializerInterface;
+   use Symfony\Component\Validator\Exception\ValidatorException;
+   use Symfony\Component\Validator\Validator\ValidatorInterface;
+   
+   #[AsTargetedValueResolver('update_status_order_request')]
+   final readonly class UpdateStatusOrderRequestDtoResolver implements ValueResolverInterface
+   {
+       public function __construct(
+           private SerializerInterface $serializer,
+           private ValidatorInterface $validator,
+           private EventService $eventService
+       ) {
+       }
+   
+       /**
+        * @param Request $request
+        * @param ArgumentMetadata $argument
+        * @return iterable
+        *
+        * @throws ExceptionInterface
+        * @throws InvalidArgumentException
+        */
+       public function resolve(Request $request, ArgumentMetadata $argument): iterable
+       {
+           $this->eventService->addBuiltInEvent(
+               eventName: 'kernel.argument_value_resolver',
+               message: $argument->getType(),
+               source: UpdateStatusOrderRequestDtoResolver::class
+           );
+   
+           if ($argument->getType() !== UpdateStatusOrderRequestDto::class) {
+               return [];
+           }
+   
+           $dto = $this->serializer->deserialize(
+               data: $request->getContent(),
+               type: UpdateStatusOrderRequestDto::class,
+               format: JsonEncoder::FORMAT
+           );
+   
+           $validationErrors = $this->validator->validate($dto);
+           if (count($validationErrors) > 0) {
+               $violations = [];
+               foreach ($validationErrors as $violation) {
+                   $violations[] = sprintf('%s: %s', $violation->getPropertyPath(), $violation->getMessage());
+               }
+   
+               throw new ValidatorException(implode("; ", $violations));
+           }
+   
+           yield $dto;
+       }
+   }
+   ```
+5. Добавляем контроллер `App\Controller\UpdateOrderStatusApiController`
+   ```php
+   <?php
+   
+   namespace App\Controller;
+   
+   use App\Dto\UpdateStatusOrderRequestDto;
+   use App\Response\ApiResponse;
+   use App\Service\OrderService;
+   use Symfony\Component\HttpFoundation\Response;
+   use Symfony\Component\HttpKernel\Attribute\AsController;
+   use Symfony\Component\HttpKernel\Attribute\ValueResolver;
+   use Symfony\Component\Routing\Attribute\Route;
+   
+   #[AsController]
+   final class UpdateOrderStatusApiController
+   {
+       #[Route(path: '/api/orders/update', methods: ['PATCH'])]
+       public function __invoke(
+           #[ValueResolver('update_status_order_request')]
+           UpdateStatusOrderRequestDto $updateStatusOrderRequestDto,
+           OrderService $orderService
+       ): ApiResponse {
+           $orderService->updateOrder($updateStatusOrderRequestDto);
+   
+           return ApiResponse::createSuccess(
+               data: null,
+               message: null,
+               code: Response::HTTP_OK
+           );
+       }
+   }
    ```
