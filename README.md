@@ -981,3 +981,46 @@
        }
    }
    ```
+   
+### Событие kernel.response
+
+1. Создаём класс-слушатель события `App\EventListener\KernelResponseEventListener`
+   ```php
+   <?php
+   
+   namespace App\EventListener;
+   
+   use App\Service\EventService;
+   use Symfony\Component\HttpKernel\Event\ResponseEvent;
+   
+   final readonly class KernelResponseEventListener
+   {
+       public function __construct(private EventService $eventService)
+       {
+       }
+        
+       /**
+        * @param ResponseEvent $event
+        * @return void
+        * 
+        * @throws InvalidArgumentException
+        */
+       public function onKernelResponse(ResponseEvent $event): void
+       {
+           $event->getResponse()->headers->set('PL-App-Custom-Header', uniqid());
+   
+           $this->eventService->addBuiltInEvent(
+               eventName: 'kernel.response',
+               message: '',
+               source: KernelResponseEventListener::class
+           );
+       }
+   }
+   ```
+2. В файле `/config/packages/services.yaml` в секции `services` добавляем созданный Event Listener
+   ```yaml
+    App\EventListener\KernelResponseEventListener:
+        tags:
+            - { name: kernel.event_listener, event: kernel.response }
+   ```
+3. В заголовках ответов видим наш заголовок `PL-App-Custom-Header`
