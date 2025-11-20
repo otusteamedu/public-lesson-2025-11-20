@@ -1072,3 +1072,97 @@
    ```
 3. Выполняем любой запрос и в лог-файле видим запись о событии
 4. В контейнере Redis просматриваем события и видим, что так же появилась запись о событии
+
+### Собственное событие
+
+1. Создаём класс `App\Event\OrderCreatedEvent`
+   ```php
+   <?php
+   
+   namespace App\Event;
+   
+   use Doctrine\Common\Collections\Order;
+   use Symfony\Contracts\EventDispatcher\Event;
+   
+   final class OrderCreatedEvent extends Event
+   {
+       public function __construct(private Order $order)
+       {
+       }
+   
+       public function getOrder(): Order
+       {
+           return $this->order;
+       }
+   }
+   ```
+2. Создаём класс `App\EventSubscriber\OrderEventsSubscriber`
+   ```php
+   <?php
+   
+   namespace App\EventSubscriber;
+   
+   use App\Event\OrderCreatedEvent;
+   use App\Service\EventService;
+   use Psr\Cache\InvalidArgumentException;
+   use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+   
+   class OrderEventsSubscriber implements EventSubscriberInterface
+   {
+       public function __construct(private EventService $eventService)
+       {
+       }
+   
+       public static function getSubscribedEvents(): array
+       {
+           return [
+               OrderCreatedEvent::class => ['onOrderCreated'],
+           ];
+       }
+   
+       /**
+        * @param OrderCreatedEvent $event
+        * @return void
+        *
+        * @throws InvalidArgumentException
+        */
+       public function onOrderCreated(OrderCreatedEvent $event): void
+       {
+           $this->eventService->addBuiltInEvent(
+               eventName: 'onOrderCreated',
+               message: sprintf('order [%d] created', $event->getOrder()->getId()),
+               source: OrderEventsSubscriber::class
+           );
+       }
+   }
+   ```
+3. Добавляем инъекцию `Symfony\Component\EventDispatcher\EventDispatcherInterface` в сервис `App\Service\OrderService`:
+   `private EventDispatcherInterface $eventDispatcher`
+4. Исправляем метод `createOrder` в сервисе `App\Service\OrderService`:
+   ```php
+    public function createOrder(CreateOrderRequestDto $dto): int
+    {
+        $client = $this->clientEntityRepository->find($dto->clientId);
+
+        if (empty($client)) {
+            throw new NotFoundHttpException('Клиент не найден');
+        }
+
+        $order = new OrderEntity();
+        $order
+            ->setStatus(OrderEntity::STATUS_NEW)
+            ->setCreatedAt(new \DateTime())
+            ->setCreatedBy($client)
+            ->setOrderContent($dto->orderContent);
+
+        $this->orderEntityRepository->createOrder($order);
+
+        $orderCreatedEvent = new OrderCreatedEvent($order);
+
+        $this->eventDispatcher->dispatch($orderCreatedEvent);
+
+        return $order->getId();
+    }
+   ```
+   
+

@@ -6,15 +6,18 @@ use App\Dto\CreateOrderRequestDto;
 use App\Dto\OrderItemDto;
 use App\Dto\UpdateStatusOrderRequestDto;
 use App\Entity\OrderEntity;
+use App\Event\OrderCreatedEvent;
 use App\Repository\ClientEntityRepository;
 use App\Repository\OrderEntityRepository;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 final readonly class OrderService
 {
     public function __construct(
         private ClientEntityRepository $clientEntityRepository,
-        private OrderEntityRepository $orderEntityRepository
+        private OrderEntityRepository $orderEntityRepository,
+        private EventDispatcherInterface $eventDispatcher
     ) {
     }
 
@@ -55,6 +58,10 @@ final readonly class OrderService
             ->setOrderContent($dto->orderContent);
 
         $this->orderEntityRepository->createOrder($order);
+
+        $orderCreatedEvent = new OrderCreatedEvent($order);
+
+        $this->eventDispatcher->dispatch($orderCreatedEvent);
 
         return $order->getId();
     }
