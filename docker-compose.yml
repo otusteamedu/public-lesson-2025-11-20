@@ -37,7 +37,7 @@ services:
     redis:
         container_name: pl-redis
         restart: unless-stopped
-        image: redis:latest
+        image: redis:alpine
 
 volumes:
     dump_pl_symfony:
