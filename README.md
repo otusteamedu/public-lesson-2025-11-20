@@ -1027,7 +1027,7 @@
 
 ### Событие kernel.terminate
 
-1. Создаём класс-слушатель события `App\EventListener\KernelResponseEventListener`
+1. Создаём класс-слушатель события `App\EventListener\KernelTerminateEventListener`
    ```php
    <?php
    
