@@ -1081,16 +1081,16 @@
    
    namespace App\Event;
    
-   use Doctrine\Common\Collections\Order;
+   use App\Entity\OrderEntity;
    use Symfony\Contracts\EventDispatcher\Event;
    
    final class OrderCreatedEvent extends Event
    {
-       public function __construct(private Order $order)
+       public function __construct(private OrderEntity $order)
        {
        }
    
-       public function getOrder(): Order
+       public function getOrder(): OrderEntity
        {
            return $this->order;
        }
